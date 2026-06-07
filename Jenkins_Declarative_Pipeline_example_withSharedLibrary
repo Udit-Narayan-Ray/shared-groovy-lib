@@ -1,0 +1,133 @@
+@Library('SharedLib') _
+pipeline{
+    agent any
+    
+    environment{
+        // Adding the SonarQube Scanner tool from Jenkins Environment
+        SONAR_HOME = tool "SonarQube"
+        //To skip any particular stage for temporarily
+        SKIP_PARAM_VALID_STAGE = false
+    }
+    
+    parameters{
+        string(name: "FRONTEND_TAG", defaultValue: '', description: "Setting latest Docker Image tag for pushing Frontend Service")
+        string(name: "BACKEND_TAG", defaultValue: '', description: "Setting latest Docker Image tag for pushing Backend Service")
+    }
+    
+    stages{
+        stage('demo for groovy library'){
+            steps{
+                hello()
+            }
+        }
+        
+        stage('Parameter Validation'){
+            when{
+                expression { env.SKIP_PARAM_VALID_STAGE == 'false' }
+            }
+            steps{
+                script{
+                if (params.FRONTEND_TAG == '' || params.BACKEND_TAG == ''){
+                    error("Both FRONTEND_TAG and BACKEND_TAG must be provided to continue with CI Procedure.")
+                    }   
+                }
+            }
+        }
+        stage('Work Environment/space Cleanup'){
+            // Clean up the working environment or space prior to building the image
+            steps{
+                cleanWs()
+            }
+        }
+        
+        stage('Git : Code Checkout from SCM tool'){
+            // Code Cloning procedure through git repository url and it's branch
+            steps{
+                code_checkout("https://github.com/Udit-Narayan-Ray/3-tier-app-deployment.git","main")
+            }
+        }
+        
+        stage('Trivy : File System Scanning'){
+            // Scanning File System and searches the current directory for multiple security risks
+            steps{
+                trivy_scan()
+            }
+        }
+        
+        stage('OWASP : Dependency Check'){
+            // Vulnerability Scan and Publishing the report in Jenkins
+            steps{
+                owasp_dependency_check()
+            }
+        }
+        
+        stage('SonarQube Scanner Server : Code Analysis'){
+            // SonarQube scanner Server for analysis of Project Code 
+            steps{
+                sonarqube_analysis("SonarQube","wanderlust","wanderlust")
+            }
+        }
+        
+        stage('SonarQube : Quality Check Gates'){
+            // SonarQube scanner for Code Quality check gates with different parameter like Coverage >=80%, Duplicate lines <=3%, Maintainability, Reliability, Security=100% and size.
+            steps{
+                sonarqube_code_quality()
+            }
+        }
+        
+        stage('Exporting Environment Variable for Cluster IP'){
+            parallel{
+                stage('Backend env setup'){
+                    steps{
+                        script{
+                            dir('Automations'){
+                                sh "bash updatebackendnew.sh"
+                            }
+                        }
+                    }
+                }
+                stage('Frontend env setup'){
+                    steps{
+                        script{
+                            dir('Automations'){
+                                sh "bash updatefrontendnew.sh"
+                            }   
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Docker : Build Image'){
+            steps{
+                script{
+                    dir('backend'){
+                        docker_build('jsrku',"wanderlust-backend-beta","${params.BACKEND_TAG}")
+                    }
+                    dir('frontend'){
+                        docker_build('jsrku',"wanderlust-frontend-beta","${params.FRONTEND_TAG}")
+                    }
+                }
+            }
+        }
+        
+        stage('Docker : Push Images to DockerHub'){
+            steps{
+                script{
+                    docker_push('jsrku',"wanderlust-backend-beta","${params.BACKEND_TAG}")
+                    docker_push('jsrku',"wanderlust-frontend-beta","${params.FRONTEND_TAG}")
+                }
+            }
+        }
+    }
+    
+    post{
+        success{
+            archiveArtifacts artifacts: '*.xml', followSymlinks: false
+            build job: "Wanderlust-CD", parameters: [
+            string(name: "FRONTEND_TAG", value: "params.${BACKEND_TAG}"),
+            string(name: "BACKEND_TAG", value: "params.${BACKEND_TAG}")
+            ]
+        }
+    }
+}
